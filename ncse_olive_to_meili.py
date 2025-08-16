@@ -11,7 +11,7 @@ Fixes:
   continuation stitching, chunking at paragraph boundaries, Meilisearch-safe IDs.
 
 Usage:
-  python3 ncse_olive_to_meili.py "/path/to/English_Woman's_Journal" -o ejw_olive_chunks.jsonl --chunk-size 2200
+  python3 ncse_olive_to_meili.py "/path/to/English_Woman's_Journal" -o ejw_olive_chunks.jsonl --chunk-size 2200 [--no-continuations]
 """
 
 import argparse
@@ -394,10 +394,11 @@ def pick_best_toc_for_chain(chain, toc_map, articles):
     first_article = articles[chain[0]]
     first_meta = first_article["meta"]
     first_page = first_meta.get("PAGE_NO")
-    if len(chain) == 1 and len(first_article["paras"]) <= 1:
+    if len(chain) == 1:
         info = toc_map.get(chain[0])
-        if info and info.get("title"):
+        if info:
             return info.get("title"), info.get("section"), info.get("first_page")
+        return None, None, None
     if first_page:
         same_page = [arid for arid, info in toc_map.items() if arid.startswith("Ar") and info.get("first_page") == first_page]
         try:
@@ -447,6 +448,11 @@ def main():
     ap.add_argument("--chunk-size", type=int, default=2200)
     ap.add_argument("--journal", default="English Woman’s Journal")
     ap.add_argument("--journal_id", default="english-womans-journal")
+    ap.add_argument(
+        "--no-continuations",
+        action="store_true",
+        help="Disable continuation chain logic; treat each article separately.",
+    )
     args = ap.parse_args()
 
     root = Path(args.edition_root)
@@ -472,7 +478,10 @@ def main():
                     articles, page_map = collect_articles(ddir)
                     if not articles:
                         continue
-                    chains = build_chains(articles, toc_map)
+                    if args.no_continuations:
+                        chains = [[arid] for arid in sorted(articles)]
+                    else:
+                        chains = build_chains(articles, toc_map)
 
                     for chain in chains:
                         first = articles[chain[0]]
