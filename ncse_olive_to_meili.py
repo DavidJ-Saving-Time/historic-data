@@ -334,18 +334,30 @@ def collect_articles(issue_dir: Path):
         plist.sort(key=lambda x: int(x["PAGE_NO"]) if (x["PAGE_NO"] or "").isdigit() else 0)
     return articles, page_map
 
-def build_chains(articles: dict):
+def build_chains(articles: dict, toc_map: dict):
     """
-    Build continuation chains using CONTINUATION_TO (preferred) or NEXT_ID.
-    Returns list of chains (each is list[ArID]) preserving order.
+    Build continuation chains using explicit CONTINUATION links.
+
+    NEXT_ID in the Olive data simply points to the next article in the
+    issue and does not imply continuation. We rely on CONTINUATION_TO but
+    only keep links when the target cites the source via CONTINUATION_FROM.
+    If TOC titles exist for both sides and differ after cleaning, the link
+    is discarded. Returns list of chains (each list[ArID]) preserving order.
     """
-    next_map = {}
+    next_map: dict[str, str] = {}
     prev_targets = set()
     for arid, a in articles.items():
-        nxt = a["links"].get("CONTINUATION_TO") or a["links"].get("NEXT_ID")
-        if nxt:
-            next_map[arid] = nxt
-            prev_targets.add(nxt)
+        nxt = a["links"].get("CONTINUATION_TO")
+        if not nxt or nxt not in articles:
+            continue
+        if articles[nxt]["links"].get("CONTINUATION_FROM") != arid:
+            continue
+        t1 = clean_toc_title((toc_map.get(arid) or {}).get("title") or "")
+        t2 = clean_toc_title((toc_map.get(nxt) or {}).get("title") or "")
+        if t1 and t2 and t1 != t2:
+            continue
+        next_map[arid] = nxt
+        prev_targets.add(nxt)
 
     starts = [arid for arid in articles.keys() if arid not in prev_targets]
     chains, seen = [], set()
@@ -365,26 +377,61 @@ def build_chains(articles: dict):
             chains.append([arid])
     return chains
 
-def pick_best_toc_for_chain(chain, toc_map):
+def pick_best_toc_for_chain(chain, toc_map, articles):
     """
-    Return (raw_title, section, first_page) choosing the first TOC entry
-    whose cleaned title isn't corrupt; else fall back to any TOC title; else Nones.
+    Return (raw_title, section, first_page) choosing the TOC entry whose
+    cleaned title appears most plausible for the chain.
+
+    If the chained IDs lack a good title, we look backward on the same
+    page for a title-only stub. Falls back to any TOC title if nothing
+    suitable is found.
     """
-    for arid in chain:
+    candidates = list(chain)
+    first_article = articles[chain[0]]
+    first_meta = first_article["meta"]
+    first_page = first_meta.get("PAGE_NO")
+    if len(chain) == 1 and len(first_article["paras"]) <= 1:
+        info = toc_map.get(chain[0])
+        if info and info.get("title"):
+            return info.get("title"), info.get("section"), info.get("first_page")
+    if first_page:
+        same_page = [arid for arid, info in toc_map.items() if arid.startswith("Ar") and info.get("first_page") == first_page]
+        try:
+            same_page.sort(key=lambda x: int(x[2:]))
+        except Exception:
+            pass
+        if chain[0] in same_page:
+            idx = same_page.index(chain[0])
+            for arid in reversed(same_page[:idx]):
+                info = toc_map.get(arid)
+                if not info:
+                    continue
+                raw = info.get("title") or ""
+                if raw.strip().startswith('.') or '+' in raw or re.match(r'^[IVXLCDM]+[\-–—]', raw.strip()):
+                    continue
+                cleaned = clean_toc_title(raw)
+                if cleaned and not looks_corrupt(cleaned):
+                    return raw, info.get("section"), info.get("first_page")
+        for arid in same_page:
+            if arid not in candidates:
+                candidates.append(arid)
+
+    for arid in candidates:
         info = toc_map.get(arid)
         if not info:
             continue
         raw = info.get("title") or ""
+        if raw.strip().startswith('.'):
+            continue
         cleaned = clean_toc_title(raw)
         if cleaned and not looks_corrupt(cleaned):
             return raw, info.get("section"), info.get("first_page")
-    for arid in chain:
+
+    for arid in candidates:
         info = toc_map.get(arid)
-        if not info:
-            continue
-        raw = info.get("title") or ""
-        if raw:
-            return raw, info.get("section"), info.get("first_page")
+        if info and info.get("title"):
+            return info.get("title"), info.get("section"), info.get("first_page")
+
     return None, None, None
 
 # ---------- Main driver ----------
@@ -421,7 +468,7 @@ def main():
                     articles, page_map = collect_articles(ddir)
                     if not articles:
                         continue
-                    chains = build_chains(articles)
+                    chains = build_chains(articles, toc_map)
 
                     for chain in chains:
                         first = articles[chain[0]]
@@ -429,7 +476,7 @@ def main():
                         arid_parent = chain[0]
 
                         # title/section/page_start from best TOC entry in chain
-                        raw_title, section, page_start_seq = pick_best_toc_for_chain(chain, toc_map)
+                        raw_title, section, page_start_seq = pick_best_toc_for_chain(chain, toc_map, articles)
                         if not raw_title:
                             raw_title = m0.get("NAME") or m0.get("LOGICAL_NAME") or ""
                         title_clean = clean_toc_title(raw_title) if raw_title else ""
