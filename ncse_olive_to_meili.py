@@ -199,6 +199,8 @@ def extract_article_text(xmd_bytes: bytes):
     Returns: meta(dict), paragraphs(list[str]), links(dict)
     """
     root = ET.fromstring(xmd_bytes)  # encoding handled by XML declaration
+    if root.tag != "XMD-entity":
+        raise ValueError(f"unexpected root tag {root.tag}")
     meta = dict(root.attrib)
     meta_el = root.find("Meta")
     if meta_el is not None:
@@ -254,6 +256,29 @@ def extract_article_text(xmd_bytes: bytes):
 
     return meta, paragraphs, links
 
+def extract_page_meta(xmd_bytes: bytes):
+    """Parse an Olive XMD page (PgXXX.xml) and return metadata.
+
+    Expected structure:
+      <XMD-PAGE PAGE_NO="..." PAGE_LABEL="...">
+        ...
+        <Entity ID="Ar00123" ENTITY_TYPE="Article" />
+      </XMD-PAGE>
+
+    Returns dict with PAGE_NO, PAGE_LABEL and list of article IDs appearing on
+    the page. Raises ValueError if the root element isn't an XMD-PAGE.
+    """
+    root = ET.fromstring(xmd_bytes)
+    if root.tag != "XMD-PAGE":
+        raise ValueError(f"unexpected root tag {root.tag}")
+    page_no = root.attrib.get("PAGE_NO")
+    page_label = root.attrib.get("PAGE_LABEL")
+    articles = []
+    for ent in root.findall(".//Entity"):
+        if ent.attrib.get("ENTITY_TYPE") == "Article" and ent.attrib.get("ID"):
+            articles.append(ent.attrib["ID"])
+    return {"PAGE_NO": page_no, "PAGE_LABEL": page_label, "articles": articles}
+
 def month_dir_to_int(name: str) -> int | None:
     try:
         return int(name)
@@ -272,25 +297,42 @@ def ymd_from_issue_path(issue_dir: Path):
         return None, None
 
 def collect_articles(issue_dir: Path):
+    """Extract article texts and page metadata from an issue directory.
+
+    Returns (articles, page_map) where page_map maps article IDs to lists of
+    page info dicts (PAGE_NO/PAGE_LABEL) sorted by PAGE_NO.
+    """
     zpath = issue_dir / "Document.zip"
     if not zpath.exists():
-        return {}
+        return {}, {}
     articles = {}
+    page_map: dict[str, list[dict[str, str | None]]] = {}
     with zipfile.ZipFile(zpath, "r") as zf:
-        names = [n for n in zf.namelist() if re.search(r"/Ar\d{5}\.xml$", n)]
-        for n in names:
+        for n in zf.namelist():
             try:
-                meta, paras, links = extract_article_text(zf.read(n))
-                arid = meta.get("ID") or Path(n).stem
-                articles[arid] = {
-                    "meta": meta,
-                    "paras": paras,
-                    "links": links,
-                    "zip_member": n,
-                }
+                if re.search(r"/Ar\d{5}\.xml$", n):
+                    meta, paras, links = extract_article_text(zf.read(n))
+                    arid = meta.get("ID") or Path(n).stem
+                    articles[arid] = {
+                        "meta": meta,
+                        "paras": paras,
+                        "links": links,
+                        "zip_member": n,
+                    }
+                elif re.search(r"/Pg\d{3}\.xml$", n):
+                    pmeta = extract_page_meta(zf.read(n))
+                    for arid in pmeta["articles"]:
+                        page_map.setdefault(arid, []).append({
+                            "PAGE_NO": pmeta["PAGE_NO"],
+                            "PAGE_LABEL": pmeta["PAGE_LABEL"],
+                        })
+                else:
+                    continue  # unknown type
             except Exception as e:
                 print(f"[WARN] parse {zpath}::{n}: {e}")
-    return articles
+    for arid, plist in page_map.items():
+        plist.sort(key=lambda x: int(x["PAGE_NO"]) if (x["PAGE_NO"] or "").isdigit() else 0)
+    return articles, page_map
 
 def build_chains(articles: dict):
     """
@@ -376,7 +418,7 @@ def main():
                     issue_volume = issue_info.get("volume")
                     issue_number = issue_info.get("number")
 
-                    articles = collect_articles(ddir)
+                    articles, page_map = collect_articles(ddir)
                     if not articles:
                         continue
                     chains = build_chains(articles)
@@ -414,19 +456,37 @@ def main():
 
                         # collect paragraphs & track start/end page numbers and labels
                         paragraphs = []
-                        page_no_start = m0.get("PAGE_NO")
-                        page_label_start = m0.get("PAGE_LABEL")
-                        page_no_end = page_no_start
-                        page_label_end = page_label_start
+                        page_no_start = page_label_start = None
+                        page_no_end = page_label_end = None
 
                         for i, arid in enumerate(chain):
                             a = articles[arid]
                             paragraphs.extend(a["paras"])
                             meta_i = a["meta"]
-                            if meta_i.get("PAGE_NO"):
-                                page_no_end = meta_i.get("PAGE_NO")
-                            if meta_i.get("PAGE_LABEL"):
-                                page_label_end = meta_i.get("PAGE_LABEL")
+                            pinfo = page_map.get(arid)
+
+                            if i == 0:
+                                page_no_start = meta_i.get("PAGE_NO") or (
+                                    pinfo[0]["PAGE_NO"] if pinfo else None
+                                )
+                                page_label_start = meta_i.get("PAGE_LABEL") or (
+                                    pinfo[0]["PAGE_LABEL"] if pinfo else None
+                                )
+
+                            last_no = meta_i.get("PAGE_NO")
+                            last_label = meta_i.get("PAGE_LABEL")
+                            if pinfo:
+                                if pinfo[-1].get("PAGE_NO"):
+                                    last_no = pinfo[-1]["PAGE_NO"]
+                                if pinfo[-1].get("PAGE_LABEL"):
+                                    last_label = pinfo[-1]["PAGE_LABEL"]
+                            if last_no:
+                                page_no_end = last_no
+                            if last_label:
+                                page_label_end = last_label
+
+                        if not page_no_start and page_start_seq:
+                            page_no_start = page_start_seq
 
                         # finalize title (fallback to first sentence if TOC looks junky)
                         final_title = title_clean
