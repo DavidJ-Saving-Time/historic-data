@@ -336,13 +336,18 @@ def collect_articles(issue_dir: Path):
 
 def build_chains(articles: dict):
     """
-    Build continuation chains using CONTINUATION_TO (preferred) or NEXT_ID.
+    Build continuation chains using CONTINUATION_TO links.
+
+    NEXT_ID in the Olive data simply points to the next article in the
+    issue and does not imply continuation. Including it in the chain
+    logic incorrectly merged consecutive articles. We therefore rely
+    solely on explicit CONTINUATION_TO links.
     Returns list of chains (each is list[ArID]) preserving order.
     """
     next_map = {}
     prev_targets = set()
     for arid, a in articles.items():
-        nxt = a["links"].get("CONTINUATION_TO") or a["links"].get("NEXT_ID")
+        nxt = a["links"].get("CONTINUATION_TO")
         if nxt:
             next_map[arid] = nxt
             prev_targets.add(nxt)
