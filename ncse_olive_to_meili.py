@@ -336,6 +336,7 @@ def collect_articles(issue_dir: Path):
 
 def build_chains(articles: dict, toc_map: dict):
     """
+
     Build continuation chains using explicit CONTINUATION links.
 
     NEXT_ID in the Olive data simply points to the next article in the
@@ -343,11 +344,13 @@ def build_chains(articles: dict, toc_map: dict):
     only keep links when the target cites the source via CONTINUATION_FROM.
     If TOC titles exist for both sides and differ after cleaning, the link
     is discarded. Returns list of chains (each list[ArID]) preserving order.
+
     """
     next_map: dict[str, str] = {}
     prev_targets = set()
     for arid, a in articles.items():
         nxt = a["links"].get("CONTINUATION_TO")
+
         if not nxt or nxt not in articles:
             continue
         if articles[nxt]["links"].get("CONTINUATION_FROM") != arid:
@@ -358,6 +361,7 @@ def build_chains(articles: dict, toc_map: dict):
             continue
         next_map[arid] = nxt
         prev_targets.add(nxt)
+
 
     starts = [arid for arid in articles.keys() if arid not in prev_targets]
     chains, seen = [], set()
