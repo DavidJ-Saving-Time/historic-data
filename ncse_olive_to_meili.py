@@ -296,11 +296,13 @@ def ymd_from_issue_path(issue_dir: Path):
     except Exception:
         return None, None
 
-def collect_articles(issue_dir: Path):
-    """Extract article texts and page metadata from an issue directory.
+def collect_articles(issue_dir: Path, toc_map: dict | None = None):
+    """Extract article texts, TOC entries and page metadata from an issue directory.
 
     Returns (articles, page_map) where page_map maps article IDs to lists of
     page info dicts (PAGE_NO/PAGE_LABEL) sorted by PAGE_NO.
+    If ``toc_map`` is provided, any ``TOC_Entry`` nodes found in article files
+    are merged into it.
     """
     zpath = issue_dir / "Document.zip"
     if not zpath.exists():
@@ -311,8 +313,36 @@ def collect_articles(issue_dir: Path):
         for n in zf.namelist():
             try:
                 if re.search(r"/Ar\d{5}\.xml$", n):
-                    meta, paras, links = extract_article_text(zf.read(n))
-                    arid = meta.get("ID") or Path(n).stem
+                    xmd_bytes = zf.read(n)
+                    root = ET.fromstring(xmd_bytes)
+                    arid = root.attrib.get("ID") or Path(n).stem
+
+                    toc_entries = root.findall(".//TOC_Entry")
+                    if toc_map is not None:
+                        meta_el = root.find("Meta")
+                        section_name = meta_el.attrib.get("SECTION") if meta_el is not None else None
+                        for te in toc_entries:
+                            info = toc_map.setdefault(arid, {})
+                            title = te.attrib.get("TITLE")
+                            if title and not info.get("title"):
+                                info["title"] = norm(title)
+                            page_no = te.attrib.get("PAGE_NO")
+                            if page_no and not info.get("first_page"):
+                                info["first_page"] = page_no
+                            if section_name and not info.get("section"):
+                                info["section"] = section_name
+
+                    is_stub = False
+                    if toc_entries:
+                        is_stub = all(
+                            ((te.attrib.get("IS_IC") or "").lower() == "true")
+                            or (int(te.attrib.get("WORDCNT") or "0") < 10)
+                            for te in toc_entries
+                        )
+                    if is_stub:
+                        continue
+
+                    meta, paras, links = extract_article_text(xmd_bytes)
                     articles[arid] = {
                         "meta": meta,
                         "paras": paras,
@@ -475,7 +505,7 @@ def main():
                     issue_volume = issue_info.get("volume")
                     issue_number = issue_info.get("number")
 
-                    articles, page_map = collect_articles(ddir)
+                    articles, page_map = collect_articles(ddir, toc_map)
                     if not articles:
                         continue
                     if args.no_continuations:
