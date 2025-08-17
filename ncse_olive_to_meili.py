@@ -184,6 +184,19 @@ def parse_toc(toc_path: Path):
                         "CONTINUATION_TO": ent.attrib.get("CONTINUATION_TO"),
                         "CONTINUATION_FROM": ent.attrib.get("CONTINUATION_FROM"),
                     }
+
+        # capture IS_IC titles from Logic_np/TOC_Entry
+        for te in root.findall(".//Logic_np/TOC_Entry"):
+            arid = te.attrib.get("ENTITY_ID_REF")
+            if not arid:
+                continue
+            info = out.setdefault(arid, {})
+            if te.attrib.get("TITLE") and not info.get("title"):
+                info["title"] = norm(te.attrib.get("TITLE"))
+            if te.attrib.get("PAGE_NO") and not info.get("first_page"):
+                info["first_page"] = te.attrib.get("PAGE_NO")
+            if te.attrib.get("IS_IC") == "true":
+                info["is_ic"] = True
     except Exception as e:
         print(f"[WARN] TOC parse failed {toc_path}: {e}")
     return out
@@ -362,6 +375,20 @@ def collect_articles(issue_dir: Path, toc_map: dict | None = None):
                 print(f"[WARN] parse {zpath}::{n}: {e}")
     for arid, plist in page_map.items():
         plist.sort(key=lambda x: int(x["PAGE_NO"]) if (x["PAGE_NO"] or "").isdigit() else 0)
+    # drop stub articles that only provide titles for following pieces
+    stub_ids = []
+    for arid, a in list(articles.items()):
+        meta = a["meta"]
+        wc = meta.get("WORDCNT")
+        try:
+            wc_i = int(wc) if wc is not None else 0
+        except Exception:
+            wc_i = 0
+        if wc_i <= 15 and not a["links"].get("CONTINUATION_TO") and not a["links"].get("CONTINUATION_FROM"):
+            stub_ids.append(arid)
+            articles.pop(arid, None)
+    for sid in stub_ids:
+        page_map.pop(sid, None)
     return articles, page_map
 
 def build_chains(articles: dict, toc_map: dict, page_map: dict):
@@ -460,7 +487,7 @@ def pick_best_toc_for_chain(chain, toc_map, articles):
             idx = same_page.index(chain[0])
             for arid in reversed(same_page[:idx]):
                 info = toc_map.get(arid)
-                if not info:
+                if not info or not info.get("is_ic"):
                     continue
                 raw = info.get("title") or ""
                 if raw.strip().startswith('.') or '+' in raw or re.match(r'^[IVXLCDM]+[\-–—]', raw.strip()):
