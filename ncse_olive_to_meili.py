@@ -364,7 +364,7 @@ def collect_articles(issue_dir: Path, toc_map: dict | None = None):
         plist.sort(key=lambda x: int(x["PAGE_NO"]) if (x["PAGE_NO"] or "").isdigit() else 0)
     return articles, page_map
 
-def build_chains(articles: dict, toc_map: dict):
+def build_chains(articles: dict, toc_map: dict, page_map: dict):
     """
 
     Build continuation chains using explicit CONTINUATION links.
@@ -373,7 +373,10 @@ def build_chains(articles: dict, toc_map: dict):
     issue and does not imply continuation. We rely on CONTINUATION_TO but
     only keep links when the target cites the source via CONTINUATION_FROM.
     If TOC titles exist for both sides and differ after cleaning, the link
-    is discarded. Returns list of chains (each list[ArID]) preserving order.
+    is discarded. Additionally, chains are only maintained when the target's
+    starting page is the same or the next page after the source's last page;
+    otherwise the chain is broken. Returns list of chains (each list[ArID])
+    preserving order.
 
     """
     next_map: dict[str, str] = {}
@@ -385,10 +388,28 @@ def build_chains(articles: dict, toc_map: dict):
             continue
         if articles[nxt]["links"].get("CONTINUATION_FROM") != arid:
             continue
+
+        # compare TOC titles if available
         t1 = clean_toc_title((toc_map.get(arid) or {}).get("title") or "")
         t2 = clean_toc_title((toc_map.get(nxt) or {}).get("title") or "")
         if t1 and t2 and t1 != t2:
             continue
+
+        # ensure page sequence is monotonic and doesn't jump
+        cur_pages = page_map.get(arid)
+        next_pages = page_map.get(nxt)
+        cur_no = cur_pages[-1]["PAGE_NO"] if cur_pages else articles[arid]["meta"].get("PAGE_NO")
+        next_no = next_pages[0]["PAGE_NO"] if next_pages else articles[nxt]["meta"].get("PAGE_NO")
+
+        try:
+            cur_no_i = int(cur_no)
+            next_no_i = int(next_no)
+        except Exception:
+            continue  # missing or non-numeric page info
+
+        if next_no_i < cur_no_i or next_no_i - cur_no_i > 1:
+            continue
+
         next_map[arid] = nxt
         prev_targets.add(nxt)
 
@@ -511,7 +532,7 @@ def main():
                     if args.no_continuations:
                         chains = [[arid] for arid in sorted(articles)]
                     else:
-                        chains = build_chains(articles, toc_map)
+                        chains = build_chains(articles, toc_map, page_map)
 
                     for chain in chains:
                         first = articles[chain[0]]
