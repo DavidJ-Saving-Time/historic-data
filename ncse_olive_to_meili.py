@@ -173,6 +173,8 @@ def parse_toc(toc_path: Path):
                 for ent in page.findall("./Entity"):
                     if ent.attrib.get("ENTITY_TYPE") != "Article":
                         continue
+                    if ent.attrib.get("ENTITY_SUBTYPE") == "Section":
+                        continue
                     arid = ent.attrib.get("ID")
                     if not arid:
                         continue
@@ -275,7 +277,11 @@ def extract_page_meta(xmd_bytes: bytes):
     page_label = root.attrib.get("PAGE_LABEL")
     articles = []
     for ent in root.findall(".//Entity"):
-        if ent.attrib.get("ENTITY_TYPE") == "Article" and ent.attrib.get("ID"):
+        if ent.attrib.get("ENTITY_TYPE") != "Article":
+            continue
+        if ent.attrib.get("ENTITY_SUBTYPE") == "Section":
+            continue
+        if ent.attrib.get("ID"):
             articles.append(ent.attrib["ID"])
     return {"PAGE_NO": page_no, "PAGE_LABEL": page_label, "articles": articles}
 
@@ -312,6 +318,8 @@ def collect_articles(issue_dir: Path):
             try:
                 if re.search(r"/Ar\d{5}\.xml$", n):
                     meta, paras, links = extract_article_text(zf.read(n))
+                    if meta.get("ENTITY_SUBTYPE") == "Section" and not any(ch.isalpha() for ch in "".join(paras)):
+                        continue
                     arid = meta.get("ID") or Path(n).stem
                     articles[arid] = {
                         "meta": meta,
